@@ -10,7 +10,14 @@ const { GridFsStorage } = require("multer-gridfs-storage");
 dotenv.config();
 
 const app = express();
-app.use(cors());
+
+// ✅ CORS CONFIGURATION: Resolves access blocks from localhost to Render
+app.use(cors({
+  origin: ["http://localhost:3000", "https://your-frontend-link.vercel.app"],
+  methods: ["GET", "POST", "DELETE", "PUT"],
+  credentials: true
+}));
+
 app.use(express.json());
 
 const server = http.createServer(app);
@@ -21,16 +28,17 @@ const io = new Server(server, {
 const CHAT_ID = "my-love-chat";
 const onlineUsers = new Map();
 
+// ✅ CONNECT TO MONGODB
 MongoClient.connect(process.env.MONGO_URL)
   .then((client) => {
     const db = client.db("love");
     const messagesCol = db.collection("messages");
     const usersCol = db.collection("llove");
 
-    // ✅ Initialize GridFS Bucket for voice notes
+    // ✅ INITIALIZE GRIDFS BUCKET
     const bucket = new GridFSBucket(db, { bucketName: "voice_notes" });
 
-    // ✅ Setup GridFS Storage for Multer
+    // ✅ SETUP GRIDFS STORAGE FOR MULTER
     const storage = new GridFsStorage({
       url: process.env.MONGO_URL,
       file: (req, file) => ({
@@ -40,9 +48,9 @@ MongoClient.connect(process.env.MONGO_URL)
     });
     const upload = multer({ storage });
 
-    /* ===================== NEW ROUTES FOR VOICE ===================== */
+    /* ===================== VOICE MESSAGE ROUTES ===================== */
 
-    // 📥 UPLOAD VOICE (Fixes the 404 error)
+    // 📥 UPLOAD VOICE: Fixes 404 error
     app.post("/api/upload-audio", upload.single("audio"), (req, res) => {
       if (!req.file) return res.status(400).json({ error: "Upload failed" });
       
@@ -50,17 +58,17 @@ MongoClient.connect(process.env.MONGO_URL)
       res.json({ url: audioUrl });
     });
 
-    // 🎧 STREAM VOICE (To play the audio in the frontend)
+    // 🎧 STREAM VOICE: To play back audio
     app.get("/api/audio/:filename", async (req, res) => {
       try {
         const downloadStream = bucket.openDownloadStreamByName(req.params.filename);
         downloadStream.pipe(res);
       } catch (err) {
-        res.status(404).json({ error: "Not found" });
+        res.status(404).json({ error: "File not found" });
       }
     });
 
-    /* ===================== SOCKET LOGIC ===================== */
+    /* ===================== SOCKET.IO LOGIC ===================== */
 
     io.on("connection", (socket) => {
       socket.on("joinChat", (name) => {
@@ -79,7 +87,6 @@ MongoClient.connect(process.env.MONGO_URL)
           content: data.content || "",
           image: data.image || null,
           audio: data.audio || null, 
-          video: data.video || null,
           createdAt: now,
           time: now.toISOString(),
           edited: false,
@@ -96,13 +103,17 @@ MongoClient.connect(process.env.MONGO_URL)
         io.to(CHAT_ID).emit("messageEdited", { id: id.toString(), content });
       });
 
+      socket.on("deleteMessage", (messageId) => {
+        io.to(CHAT_ID).emit("messageDeleted", messageId);
+      });
+
       socket.on("disconnect", () => {
         onlineUsers.delete(socket.id);
         io.to(CHAT_ID).emit("updateUserStatus", Array.from(new Set(onlineUsers.values())));
       });
     });
 
-    /* ===================== HTTP ROUTES ===================== */
+    /* ===================== HTTP API ROUTES ===================== */
 
     app.post("/login", async (req, res) => {
       const { username, password } = req.body;
@@ -120,6 +131,18 @@ MongoClient.connect(process.env.MONGO_URL)
       res.json(formatted);
     });
 
-    server.listen(5000, () => console.log("🚀 Server running on port 5000"));
+    app.delete("/api/messages/:id", async (req, res) => {
+      try {
+        const { id } = req.params;
+        await messagesCol.deleteOne({ _id: new ObjectId(id) });
+        io.to(CHAT_ID).emit("messageDeleted", id);
+        res.json({ success: true });
+      } catch (err) {
+        res.status(500).json({ success: false });
+      }
+    });
+
+    const PORT = process.env.PORT || 5000;
+    server.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
   })
   .catch((err) => console.error("MongoDB error:", err));
