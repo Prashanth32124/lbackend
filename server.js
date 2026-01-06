@@ -13,6 +13,7 @@ const app = express();
 const server = http.createServer(app);
 
 /* ===================== CORS ===================== */
+// Updated to ensure all origins work correctly
 app.use(cors({
   origin: [
     "http://localhost:3000",
@@ -97,16 +98,12 @@ MongoClient.connect(process.env.MONGO_URL)
 
     /* ===================== SOCKET LOGIC ===================== */
     io.on("connection", (socket) => {
-
       socket.on("joinChat", (name) => {
         if (!name) return;
         const user = name.toLowerCase().trim();
         socket.join(CHAT_ID);
         onlineUsers.set(socket.id, user);
-        io.to(CHAT_ID).emit(
-          "updateUserStatus",
-          Array.from(new Set(onlineUsers.values()))
-        );
+        io.to(CHAT_ID).emit("updateUserStatus", Array.from(new Set(onlineUsers.values())));
       });
 
       socket.on("sendMessage", async (data) => {
@@ -121,12 +118,8 @@ MongoClient.connect(process.env.MONGO_URL)
           time: now.toISOString(),
           edited: false
         };
-
         const result = await messagesCol.insertOne(message);
-        io.to(CHAT_ID).emit("receiveMessage", {
-          ...message,
-          _id: result.insertedId
-        });
+        io.to(CHAT_ID).emit("receiveMessage", { ...message, _id: result.insertedId });
       });
 
       socket.on("editMessage", async ({ id, content }) => {
@@ -140,15 +133,11 @@ MongoClient.connect(process.env.MONGO_URL)
 
       socket.on("disconnect", () => {
         onlineUsers.delete(socket.id);
-        io.to(CHAT_ID).emit(
-          "updateUserStatus",
-          Array.from(new Set(onlineUsers.values()))
-        );
+        io.to(CHAT_ID).emit("updateUserStatus", Array.from(new Set(onlineUsers.values())));
       });
     });
 
     /* ===================== REST APIs ===================== */
-
     app.post("/login", async (req, res) => {
       const { username, password } = req.body;
       const user = await usersCol.findOne({
@@ -160,20 +149,13 @@ MongoClient.connect(process.env.MONGO_URL)
     });
 
     app.get("/api/messages", async (req, res) => {
-      const msgs = await messagesCol
-        .find({ chatId: CHAT_ID })
-        .sort({ createdAt: 1 })
-        .toArray();
+      const msgs = await messagesCol.find({ chatId: CHAT_ID }).sort({ createdAt: 1 }).toArray();
       res.json(msgs);
     });
 
-    /* ===================== HEALTH ===================== */
     app.get("/health", (req, res) => res.send("OK"));
 
-    /* ===================== START ===================== */
     const PORT = process.env.PORT || 5000;
-    server.listen(PORT, () =>
-      console.log(`🚀 Server running on port ${PORT}`)
-    );
+    server.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
   })
   .catch((err) => console.error("❌ MongoDB error:", err));
