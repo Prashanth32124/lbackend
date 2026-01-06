@@ -3,27 +3,27 @@ const cors = require("cors");
 const dotenv = require("dotenv");
 const http = require("http");
 const { Server } = require("socket.io");
-const { MongoClient, ObjectId, GridFSBucket } = require("mongodb");
+const { MongoClient, ObjectId } = require("mongodb");
 const multer = require("multer");
+const { createClient } = require("@supabase/supabase-js");
 
 dotenv.config();
 
 const app = express();
 const server = http.createServer(app);
 
-/* ===================== CORS (CRITICAL FIX) ===================== */
+/* ===================== CORS ===================== */
 app.use(cors({
   origin: [
     "http://localhost:3000",
     "http://127.0.0.1:3000",
-    "https://loveuajuma.vercel.app/" // if deployed
+    "https://loveuajuma.vercel.app"
   ],
   credentials: true,
   methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
   allowedHeaders: ["Content-Type", "Authorization"]
 }));
-
-app.options("*", cors()); // 🔥 preflight fix
+app.options("*", cors());
 app.use(express.json());
 
 /* ===================== SOCKET.IO ===================== */
@@ -32,19 +32,23 @@ const io = new Server(server, {
     origin: [
       "http://localhost:3000",
       "http://127.0.0.1:3000",
-      "https://loveuajuma.vercel.app/"
+      "https://loveuajuma.vercel.app"
     ],
-    credentials: true,
-    methods: ["GET", "POST"]
-  },
-  transports: ["websocket", "polling"]
+    credentials: true
+  }
 });
 
 /* ===================== CONSTANTS ===================== */
 const CHAT_ID = "my-love-chat";
 const onlineUsers = new Map();
 
-/* ===================== MULTER (MEMORY SAFE FOR RENDER) ===================== */
+/* ===================== SUPABASE ===================== */
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_KEY
+);
+
+/* ===================== MULTER ===================== */
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 10 * 1024 * 1024 } // 10MB
@@ -58,59 +62,36 @@ MongoClient.connect(process.env.MONGO_URL)
     const db = client.db("love");
     const messagesCol = db.collection("messages");
     const usersCol = db.collection("llove");
-    const bucket = new GridFSBucket(db, { bucketName: "voice_notes" });
 
-    /* ===================== AUDIO ROUTES ===================== */
-
-    // 📥 Upload audio
+    /* ===================== AUDIO UPLOAD (SUPABASE) ===================== */
     app.post("/api/upload-audio", upload.single("audio"), async (req, res) => {
       try {
         if (!req.file) {
           return res.status(400).json({ error: "No audio file" });
         }
 
-        const filename = `${Date.now()}-${req.file.originalname}`;
+        const fileName = `voice_${Date.now()}.webm`;
 
-        const uploadStream = bucket.openUploadStream(filename, {
-          contentType: req.file.mimetype
-        });
-
-        uploadStream.end(req.file.buffer);
-
-        uploadStream.on("finish", () => {
-          res.json({
-            url: `https://lbackend-2.onrender.com/api/audio/${filename}`
+        const { error } = await supabase.storage
+          .from("voice-notes")
+          .upload(fileName, req.file.buffer, {
+            contentType: "audio/webm"
           });
-        });
 
-        uploadStream.on("error", (err) => {
-          console.error("GridFS upload error:", err);
-          res.status(500).json({ error: "Upload failed" });
-        });
+        if (error) {
+          console.error("Supabase upload error:", error);
+          return res.status(500).json({ error: "Upload failed" });
+        }
+
+        const { data } = supabase.storage
+          .from("voice-notes")
+          .getPublicUrl(fileName);
+
+        return res.json({ url: data.publicUrl });
 
       } catch (err) {
-        console.error(err);
+        console.error("Server error:", err);
         res.status(500).json({ error: "Server error" });
-      }
-    });
-
-    // 🎧 Stream audio
-    app.get("/api/audio/:filename", (req, res) => {
-      try {
-        res.set({
-          "Content-Type": "audio/webm",
-          "Accept-Ranges": "bytes"
-        });
-
-        const stream = bucket.openDownloadStreamByName(req.params.filename);
-        stream.pipe(res);
-
-        stream.on("error", () => {
-          res.status(404).json({ error: "Audio not found" });
-        });
-
-      } catch (err) {
-        res.status(500).json({ error: "Stream error" });
       }
     });
 
@@ -152,7 +133,7 @@ MongoClient.connect(process.env.MONGO_URL)
         if (!id) return;
         await messagesCol.updateOne(
           { _id: new ObjectId(id) },
-          { $set: { content, edited: true, updatedAt: new Date() } }
+          { $set: { content, edited: true } }
         );
         io.to(CHAT_ID).emit("messageEdited", { id, content });
       });
@@ -183,14 +164,13 @@ MongoClient.connect(process.env.MONGO_URL)
         .find({ chatId: CHAT_ID })
         .sort({ createdAt: 1 })
         .toArray();
-
       res.json(msgs);
     });
 
-    /* ===================== HEALTH CHECK ===================== */
+    /* ===================== HEALTH ===================== */
     app.get("/health", (req, res) => res.send("OK"));
 
-    /* ===================== START SERVER ===================== */
+    /* ===================== START ===================== */
     const PORT = process.env.PORT || 5000;
     server.listen(PORT, () =>
       console.log(`🚀 Server running on port ${PORT}`)
