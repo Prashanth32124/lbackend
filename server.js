@@ -1,7 +1,7 @@
 const express = require("express");
 const cors = require("cors");
 const dotenv = require("dotenv");
-const { MongoClient } = require("mongodb");
+const { MongoClient, ObjectId } = require("mongodb");
 const http = require("http");
 const { Server } = require("socket.io");
 
@@ -26,6 +26,8 @@ MongoClient.connect(process.env.MONGO_URL)
     const usersCol = db.collection("llove");
 
     io.on("connection", (socket) => {
+
+      /* 🔗 JOIN CHAT */
       socket.on("joinChat", (name) => {
         if (!name) return;
 
@@ -39,20 +41,56 @@ MongoClient.connect(process.env.MONGO_URL)
         );
       });
 
+      /* 💬 SEND MESSAGE */
       socket.on("sendMessage", async (data) => {
+        const now = new Date();
+
         const message = {
           chatId: CHAT_ID,
           sender: data.sender,
           content: data.content || "",
           image: data.image || null,
           video: data.video || null,
-          createdAt: new Date(),
+          createdAt: now,
+          time: now.toISOString(),
+          edited: false, // ✅ added
         };
 
-        await messagesCol.insertOne(message);
-        io.to(CHAT_ID).emit("receiveMessage", message);
+        const result = await messagesCol.insertOne(message);
+
+        io.to(CHAT_ID).emit("receiveMessage", {
+          ...message,
+          _id: result.insertedId,
+        });
       });
 
+      /* ✏️ EDIT MESSAGE (NEW) */
+      socket.on("editMessage", async ({ id, content }) => {
+        if (!id || !content) return;
+
+        await messagesCol.updateOne(
+          { _id: new ObjectId(id) },
+          {
+            $set: {
+              content,
+              edited: true,
+              updatedAt: new Date(),
+            },
+          }
+        );
+
+        io.to(CHAT_ID).emit("messageEdited", {
+          id,
+          content,
+        });
+      });
+
+      /* 🗑️ SOCKET DELETE (FOR OTHER USERS) */
+      socket.on("deleteMessage", (messageId) => {
+        io.to(CHAT_ID).emit("messageDeleted", messageId);
+      });
+
+      /* ❌ DISCONNECT */
       socket.on("disconnect", () => {
         onlineUsers.delete(socket.id);
         io.to(CHAT_ID).emit(
@@ -62,7 +100,7 @@ MongoClient.connect(process.env.MONGO_URL)
       });
     });
 
-    /* LOGIN */
+    /* 🔐 LOGIN */
     app.post("/login", async (req, res) => {
       const { username, password } = req.body;
 
@@ -71,20 +109,41 @@ MongoClient.connect(process.env.MONGO_URL)
         password: password.trim(),
       });
 
-      if (!user) {
-        return res.status(401).json({ success: false });
-      }
+      if (!user) return res.status(401).json({ success: false });
 
       res.json({ success: true, name: user.username });
     });
 
-    /* LOAD MESSAGES */
+    /* 📥 LOAD MESSAGES */
     app.get("/api/messages", async (req, res) => {
       const msgs = await messagesCol
         .find({ chatId: CHAT_ID })
         .sort({ createdAt: 1 })
         .toArray();
-      res.json(msgs);
+
+      // ✅ ensure old messages work
+      const formatted = msgs.map((m) => ({
+        ...m,
+        time: m.time || m.createdAt,
+      }));
+
+      res.json(formatted);
+    });
+
+    /* 🗑️ DELETE MESSAGE (HTTP) */
+    app.delete("/api/messages/:id", async (req, res) => {
+      try {
+        const { id } = req.params;
+
+        await messagesCol.deleteOne({ _id: new ObjectId(id) });
+
+        io.to(CHAT_ID).emit("messageDeleted", id);
+
+        res.json({ success: true });
+      } catch (err) {
+        console.error("Delete error:", err);
+        res.status(500).json({ success: false });
+      }
     });
 
     server.listen(5000, () =>
