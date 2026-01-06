@@ -65,25 +65,31 @@ MongoClient.connect(process.env.MONGO_URL)
       });
 
       /* ✏️ EDIT MESSAGE (NEW) */
-      socket.on("editMessage", async ({ id, content }) => {
-        if (!id || !content) return;
+      /* ✏️ EDIT MESSAGE */
+socket.on("editMessage", async ({ id, content }) => {
+  if (!id || typeof content !== "string") return;
 
-        await messagesCol.updateOne(
-          { _id: new ObjectId(id) },
-          {
-            $set: {
-              content,
-              edited: true,
-              updatedAt: new Date(),
-            },
-          }
-        );
+  const _id = new ObjectId(id);
 
-        io.to(CHAT_ID).emit("messageEdited", {
-          id,
-          content,
-        });
-      });
+  // update DB
+  await messagesCol.updateOne(
+    { _id },
+    {
+      $set: {
+        content,
+        edited: true,
+        updatedAt: new Date(),
+      },
+    }
+  );
+
+  // emit update to all users
+  io.to(CHAT_ID).emit("messageEdited", {
+    id: id.toString(), // ✅ ALWAYS SEND STRING
+    content,
+  });
+});
+
 
       /* 🗑️ SOCKET DELETE (FOR OTHER USERS) */
       socket.on("deleteMessage", (messageId) => {
